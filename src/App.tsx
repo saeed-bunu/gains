@@ -1243,7 +1243,7 @@ function App() {
               <button className="button button-dark" onClick={() => setDialog('plan')}><Icon name="spark" size={17} /> {profile.email ? 'Edit my plan' : 'Make it personal'}</button>
             </section>
 
-            {todayWorkout.session && <section className="panel guided-preview"> 
+            {todayWorkout.session && <section className="panel guided-preview">
               <div className="guided-preview-heading">
                 <div>
                   <p className="eyebrow">COACH MODE</p>
