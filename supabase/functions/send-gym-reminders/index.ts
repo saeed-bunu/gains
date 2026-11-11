@@ -1,13 +1,6 @@
 import webpush from 'npm:web-push@3.6.7'
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
-type GymSchedule = {
-  user_id: string
-  training_days: number[]
-  gym_time: string
-  timezone: string
-}
-
 type PushSubscriptionRow = {
   id: number
   endpoint: string
@@ -30,33 +23,6 @@ function requiredEnv(name: string) {
   const value = Deno.env.get(name)
   if (!value) throw new Error(`Missing required environment variable: ${name}`)
   return value
-}
-
-function dateKey(date: string, offset: number) {
-  const shifted = new Date(`${date}T12:00:00.000Z`)
-  shifted.setUTCDate(shifted.getUTCDate() + offset)
-  return shifted.toISOString().slice(0, 10)
-}
-
-function localClock(date: Date, timezone: string) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    weekday: 'short',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(date)
-  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]))
-  const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(values.weekday)
-  if (weekday < 0) throw new Error(`Could not determine local weekday for timezone ${timezone}`)
-  return {
-    date: `${values.year}-${values.month}-${values.day}`,
-    weekday,
-    minute: Number(values.hour) * 60 + Number(values.minute),
-  }
 }
 
 function randomQuote(items: string[]) {
@@ -108,91 +74,46 @@ Deno.serve(async (request) => {
       requiredEnv('VAPID_PRIVATE_KEY'),
     )
 
-    const { data: schedules, error: scheduleError } = await admin
-      .from('gym_schedules')
-      .select('user_id,training_days,gym_time,timezone')
-    if (scheduleError) throw scheduleError
+    // 1. Fetch ONLY the jobs that are due right now
+    const { data: jobs, error: jobsError } = await admin
+      .from('gym_reminder_jobs')
+      .select('*')
+      .lte('scheduled_at', new Date().toISOString())
+      
+    if (jobsError) throw jobsError
 
-    const now = new Date()
     let sent = 0
     let failures = 0
-    for (const schedule of (schedules ?? []) as GymSchedule[]) {
-      let clock: ReturnType<typeof localClock>
+
+    // 2. Loop through the queue
+    for (const job of jobs ?? []) {
       try {
-        clock = localClock(now, schedule.timezone)
-      } catch (error) {
-        console.error(`Invalid timezone for user ${schedule.user_id}.`, error)
-        failures++
-        continue
-      }
-
-      const [gymHours, gymMinutes] = schedule.gym_time.split(':').map(Number)
-      const gymMinute = gymHours * 60 + gymMinutes
-      const candidates = [
-        { type: 'before' as const, target: gymMinute - 60, workoutOffset: gymMinute < 60 ? 1 : 0 },
-        { type: 'missed' as const, target: gymMinute + 120, workoutOffset: gymMinute + 120 >= 1440 ? -1 : 0 },
-      ]
-
-      for (const candidate of candidates) {
-        const targetMinute = (candidate.target + 1440) % 1440
-        const minutesAfterTarget = (clock.minute - targetMinute + 1440) % 1440
-        if (minutesAfterTarget > 3) continue
-
-        const workoutDate = dateKey(clock.date, candidate.workoutOffset)
-        const workoutWeekday = (new Date(`${workoutDate}T12:00:00.000Z`).getUTCDay() + 6) % 7
-        if (!schedule.training_days.includes(workoutWeekday)) continue
-
-        if (candidate.type === 'missed') {
-          const { data: checkin, error: checkinError } = await admin
-            .from('workout_checkins')
-            .select('completed_at')
-            .eq('user_id', schedule.user_id)
-            .eq('workout_date', workoutDate)
-            .maybeSingle()
-          if (checkinError) {
-            console.error(`Could not check workout completion for ${schedule.user_id}.`, checkinError)
-            failures++
-            continue
-          }
-          if (checkin) continue
-        }
-
-        const { data: delivery, error: deliveryError } = await admin
-          .from('gym_reminder_deliveries')
-          .upsert({
-            user_id: schedule.user_id,
-            workout_date: workoutDate,
-            reminder_type: candidate.type,
-          }, { onConflict: 'user_id,workout_date,reminder_type', ignoreDuplicates: true })
-          .select('user_id')
-          .maybeSingle()
-        if (deliveryError) throw deliveryError
-        if (!delivery) continue
-
         const { data: subscriptions, error: subscriptionsError } = await admin
           .from('push_subscriptions')
           .select('id,endpoint,p256dh,auth_key')
-          .eq('user_id', schedule.user_id)
+          .eq('user_id', job.user_id)
+          
         if (subscriptionsError) throw subscriptionsError
+
+        // If no subscriptions, delete the job and move on
         if (!subscriptions?.length) {
-          await admin.from('gym_reminder_deliveries').delete()
-            .eq('user_id', schedule.user_id)
-            .eq('workout_date', workoutDate)
-            .eq('reminder_type', candidate.type)
+          await admin.from('gym_reminder_jobs').delete().eq('id', job.id)
           continue
         }
 
-        const missed = candidate.type === 'missed'
+        const missed = job.reminder_type === 'missed'
         const payload = JSON.stringify({
           title: missed ? 'A missed workout is a chance to reset' : 'Your workout is in an hour',
           body: missed ? randomQuote(missedQuotes) : randomQuote(beforeQuotes),
-          tag: `gains-${candidate.type}-${workoutDate}`,
+          tag: `gains-${job.reminder_type}-${job.workout_date}`,
           url: '/',
         })
+
         let deliveredToAtLeastOne = false
+
         for (const subscription of subscriptions as PushSubscriptionRow[]) {
           if (!isAllowedPushEndpoint(subscription.endpoint)) {
-            console.error(`Rejected unsupported push endpoint for ${schedule.user_id}.`)
+            console.error(`Rejected unsupported push endpoint for ${job.user_id}.`)
             failures++
             continue
           }
@@ -210,18 +131,18 @@ Deno.serve(async (request) => {
                 .delete().eq('id', subscription.id)
               if (deleteError) console.error('Could not remove expired push subscription.', deleteError)
             } else {
-              console.error(`Could not send ${candidate.type} reminder to ${schedule.user_id}.`, error)
+              console.error(`Could not send ${job.reminder_type} reminder to ${job.user_id}.`, error)
               failures++
             }
           }
         }
 
-        if (!deliveredToAtLeastOne) {
-          await admin.from('gym_reminder_deliveries').delete()
-            .eq('user_id', schedule.user_id)
-            .eq('workout_date', workoutDate)
-            .eq('reminder_type', candidate.type)
-        }
+        // 3. Delete the job after processing so it doesn't send again
+        await admin.from('gym_reminder_jobs').delete().eq('id', job.id)
+
+      } catch (error) {
+        console.error(`Failed to process job ${job.id}:`, error)
+        failures++
       }
     }
 

@@ -661,6 +661,7 @@ function App() {
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
     const syncSchedule = async () => {
       try {
+        // 1. Sync the main schedule
         const { error } = await client.from('gym_schedules').upsert({
           user_id: account.id,
           training_days: profile.trainingDays,
@@ -668,9 +669,50 @@ function App() {
           timezone,
           updated_at: new Date().toISOString(),
         }, { onConflict: 'user_id' })
-        if (!active || !error) return
-        console.error('Could not sync your gym reminder schedule.', error)
-        setNotice('Your gym schedule could not sync for push reminders. Please try refreshing Gains.')
+        
+        if (error) throw error
+
+        // 2. Queue reminder jobs for the next 7 days
+        // First, clear any existing future jobs to prevent duplicates
+        await client.from('gym_reminder_jobs')
+          .delete()
+          .eq('user_id', account.id)
+          .gte('scheduled_at', new Date().toISOString())
+
+        const jobsToInsert = []
+        const [hours, minutes] = profile.gymTime.split(':').map(Number)
+
+        for (let i = 0; i < 7; i++) {
+          const targetDate = new Date()
+          targetDate.setDate(targetDate.getDate() + i)
+          const dayIndex = (targetDate.getDay() + 6) % 7 // Convert to Monday=0 index
+
+          if (profile.trainingDays.includes(dayIndex)) {
+            targetDate.setHours(hours, minutes, 0, 0)
+            
+            // Only queue if the workout is in the future
+            if (targetDate > new Date()) {
+              const workoutDateStr = localDateKey(targetDate)
+              
+              // Schedule reminder for 1 hour before workout
+              const reminderTime = new Date(targetDate.getTime() - 60 * 60 * 1000)
+              
+              jobsToInsert.push({
+                user_id: account.id,
+                scheduled_at: reminderTime.toISOString(),
+                workout_date: workoutDateStr,
+                reminder_type: 'before'
+              })
+            }
+          }
+        }
+
+        if (jobsToInsert.length > 0) {
+          const { error: reminderError } = await client.from('gym_reminder_jobs').insert(jobsToInsert)
+          if (reminderError) console.error("Failed to queue reminders:", reminderError)
+        }
+
+        if (!active) return
       } catch (error) {
         if (!active) return
         console.error('Could not sync your gym reminder schedule.', error)
