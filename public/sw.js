@@ -5,9 +5,6 @@ self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
 
-self.addEventListener('fetch', (event) => {
-  // This empty fetch listener tells the browser it's a valid PWA
-});
 
 // ==========================================
 // 2. PUSH NOTIFICATION EVENTS (Your existing logic)
