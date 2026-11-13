@@ -1,5 +1,7 @@
 import webpush from 'npm:web-push@3.6.7'
 import { createClient } from 'npm:@supabase/supabase-js@2'
+import { Ratelimit } from "npm:@upstash/ratelimit@latest";
+import { Redis } from "npm:@upstash/redis@latest";
 
 type PushSubscriptionRow = {
   id: number
@@ -52,6 +54,12 @@ function isAllowedPushEndpoint(endpoint: string) {
   }
 }
 
+// Initialize Upstash Rate Limiter
+const ratelimit = new Ratelimit({
+  redis: Redis.fromEnv(),
+  limiter: Ratelimit.slidingWindow(10, "10 s"), // Max 10 requests per 10 seconds
+});
+
 Deno.serve(async (request) => {
   if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 })
 
@@ -59,6 +67,17 @@ Deno.serve(async (request) => {
     const schedulerSecret = requiredEnv('GYM_REMINDER_CRON_SECRET')
     if (request.headers.get('authorization') !== `Bearer ${schedulerSecret}`) {
       return new Response('Unauthorized', { status: 401 })
+    }
+    
+        // Check rate limit before proceeding
+    const ip = request.headers.get('x-forwarded-for') || 'anonymous';
+    const { success } = await ratelimit.limit(ip);
+    
+    if (!success) {
+      return new Response(JSON.stringify({ error: 'Too many requests. Please slow down.' }), {
+        status: 429,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
 
     const supabaseUrl = requiredEnv('SUPABASE_URL')

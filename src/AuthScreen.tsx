@@ -338,6 +338,18 @@ export default function AuthScreen() {
             : <button className="auth-primary-button" type="submit" disabled={busy}>{busy ? 'One moment…' : mode === 'signup' ? 'Continue' : mode === 'recovery' ? 'Send reset link' : 'Sign in'}<span aria-hidden="true">→</span></button>}
         </form>
 
+        <p className="auth-legal-text">
+          By continuing, you agree to our{' '}
+          <a href="/terms.html" target="_blank" rel="noopener noreferrer">
+            Terms & Conditions
+          </a>{' '}
+          and{' '}
+          <a href="/privacy.html" target="_blank" rel="noopener noreferrer">
+            Privacy Policy
+          </a>.
+          Gains is not a substitute for professional medical advice.
+        </p>
+        
         {mode === 'signup' && step === 1 && <p className="auth-terms">Your password is handled securely by Supabase authentication.</p>}
         <div className="auth-switch">
           {isSignup ? <>Already have an account? <button type="button" onClick={() => changeMode('signin')}>Sign in</button></>

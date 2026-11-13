@@ -781,3 +781,16 @@
     animation-iteration-count: 1 !important;
   }
 }
+.auth-legal-text {
+  font-size: 11px;
+  color: #888;
+  margin-top: 16px;
+  text-align: center;
+  line-height: 1.4;
+}
+
+.auth-legal-text a {
+  color: #243c34; /* Your brand green */
+  font-weight: 600;
+  text-decoration: underline;
+}
