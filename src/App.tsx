@@ -1095,6 +1095,11 @@ function App() {
           completed_at: new Date().toISOString(),
         }, { onConflict: 'user_id,workout_date' })
         if (error) throw error
+         await client.from('gym_reminder_jobs')
+          .delete()
+          .eq('user_id', currentAccount.id)
+          .eq('workout_date', workoutDate)
+          .eq('reminder_type', 'missed');
       } else {
         const { error } = await client.from('workout_checkins')
           .delete().eq('user_id', currentAccount.id).eq('workout_date', workoutDate)

@@ -107,6 +107,20 @@ Deno.serve(async (request) => {
     // 2. Loop through the queue
         for (const job of jobs ?? []) {
       try {
+                // 🚨 CRITICAL FIX: If this is a 'missed' reminder, check if they already worked out!
+        if (job.reminder_type === 'missed') {
+          const { data: checkin } = await admin
+            .from('workout_checkins')
+            .select('completed_at')
+            .eq('user_id', job.user_id)
+            .eq('workout_date', job.workout_date)
+            .maybeSingle()
+
+          // If a check-in exists, they did the workout! Skip sending the notification.
+          if (checkin) {
+            continue; 
+          }
+        }
         const { data: subscriptions, error: subscriptionsError } = await admin
           .from('push_subscriptions')
           .select('id,endpoint,p256dh,auth_key')
