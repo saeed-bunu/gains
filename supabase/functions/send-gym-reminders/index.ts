@@ -105,7 +105,7 @@ Deno.serve(async (request) => {
     let failures = 0
 
     // 2. Loop through the queue
-    for (const job of jobs ?? []) {
+        for (const job of jobs ?? []) {
       try {
         const { data: subscriptions, error: subscriptionsError } = await admin
           .from('push_subscriptions')
@@ -114,54 +114,42 @@ Deno.serve(async (request) => {
           
         if (subscriptionsError) throw subscriptionsError
 
-        // If no subscriptions, delete the job and move on
-        if (!subscriptions?.length) {
-          await admin.from('gym_reminder_jobs').delete().eq('id', job.id)
-          continue
-        }
+        // If no subscriptions, just skip sending but still delete the job
+        if (subscriptions?.length) {
+          const missed = job.reminder_type === 'missed'
+          const payload = JSON.stringify({
+            title: missed ? 'A missed workout is a chance to reset' : 'Your workout is in an hour',
+            body: missed ? randomQuote(missedQuotes) : randomQuote(beforeQuotes),
+            tag: `gains-${job.reminder_type}-${job.workout_date}`,
+            url: '/',
+          })
 
-        const missed = job.reminder_type === 'missed'
-        const payload = JSON.stringify({
-          title: missed ? 'A missed workout is a chance to reset' : 'Your workout is in an hour',
-          body: missed ? randomQuote(missedQuotes) : randomQuote(beforeQuotes),
-          tag: `gains-${job.reminder_type}-${job.workout_date}`,
-          url: '/',
-        })
-
-        let deliveredToAtLeastOne = false
-
-        for (const subscription of subscriptions as PushSubscriptionRow[]) {
-          if (!isAllowedPushEndpoint(subscription.endpoint)) {
-            console.error(`Rejected unsupported push endpoint for ${job.user_id}.`)
-            failures++
-            continue
-          }
-          try {
-            await webpush.sendNotification({
-              endpoint: subscription.endpoint,
-              keys: { p256dh: subscription.p256dh, auth: subscription.auth_key },
-            }, payload)
-            deliveredToAtLeastOne = true
-            sent++
-          } catch (error) {
-            const code = statusCode(error)
-            if (code === 404 || code === 410) {
-              const { error: deleteError } = await admin.from('push_subscriptions')
-                .delete().eq('id', subscription.id)
-              if (deleteError) console.error('Could not remove expired push subscription.', deleteError)
-            } else {
-              console.error(`Could not send ${job.reminder_type} reminder to ${job.user_id}.`, error)
-              failures++
+          for (const subscription of subscriptions as PushSubscriptionRow[]) {
+            if (!isAllowedPushEndpoint(subscription.endpoint)) continue
+            
+            try {
+              await webpush.sendNotification({
+                endpoint: subscription.endpoint,
+                keys: { p256dh: subscription.p256dh, auth: subscription.auth_key },
+              }, payload)
+              sent++
+            } catch (error) {
+              const code = statusCode(error)
+              if (code === 404 || code === 410) {
+                // Delete expired sub
+                await admin.from('push_subscriptions').delete().eq('id', subscription.id)
+              } else {
+                failures++
+              }
             }
           }
         }
-
-        // 3. Delete the job after processing so it doesn't send again
-        await admin.from('gym_reminder_jobs').delete().eq('id', job.id)
-
       } catch (error) {
         console.error(`Failed to process job ${job.id}:`, error)
         failures++
+      } finally {
+        // 🚨 CRITICAL FIX: ALWAYS delete the job, even if push fails!
+        await admin.from('gym_reminder_jobs').delete().eq('id', job.id)
       }
     }
 

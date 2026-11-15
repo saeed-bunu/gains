@@ -695,26 +695,36 @@ function App() {
         const jobsToInsert = []
         const [hours, minutes] = profile.gymTime.split(':').map(Number)
 
-        for (let i = 0; i < 7; i++) {
+                for (let i = 0; i < 7; i++) {
           const targetDate = new Date()
           targetDate.setDate(targetDate.getDate() + i)
           const dayIndex = (targetDate.getDay() + 6) % 7 // Convert to Monday=0 index
 
           if (profile.trainingDays.includes(dayIndex)) {
             targetDate.setHours(hours, minutes, 0, 0)
-            
-            // Only queue if the workout is in the future
-            if (targetDate > new Date()) {
-              const workoutDateStr = localDateKey(targetDate)
-              
-              // Schedule reminder for 1 hour before workout
-              const reminderTime = new Date(targetDate.getTime() - 60 * 60 * 1000)
-              
+            const workoutDateStr = localDateKey(targetDate)
+
+            // 1. Queue the "Before" reminder (1 hour before)
+            const reminderTime = new Date(targetDate.getTime() - 60 * 60 * 1000)
+            // ONLY queue if the reminder time is still in the future
+            if (reminderTime > new Date()) {
               jobsToInsert.push({
                 user_id: account.id,
                 scheduled_at: reminderTime.toISOString(),
                 workout_date: workoutDateStr,
                 reminder_type: 'before'
+              })
+            }
+
+            // 2. Queue the "Missed" reminder (2 hours after)
+            const missedTime = new Date(targetDate.getTime() + 2 * 60 * 60 * 1000)
+            // ONLY queue if the missed time is in the future
+            if (missedTime > new Date()) {
+              jobsToInsert.push({
+                user_id: account.id,
+                scheduled_at: missedTime.toISOString(),
+                workout_date: workoutDateStr,
+                reminder_type: 'missed'
               })
             }
           }
